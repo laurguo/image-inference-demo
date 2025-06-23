@@ -48,7 +48,6 @@
             display: none;
         }
         #result {
-            margin-top: 32px;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -86,6 +85,20 @@
             align-items: center;
             justify-content: flex-start;
         }
+        .image-visual-wrapper {
+            align-self: flex-start;
+            display: flex;
+            flex-direction: column;
+        }
+        .image-visual-wrapper.has-result {
+            margin-top: 10px;
+        }
+        .image-col > img,
+        .image-col > canvas {
+            display: block;
+            margin-bottom: 0;
+            vertical-align: top;
+        }
         .image-label {
             font-size: 1.1rem;
             margin-bottom: 8px;
@@ -122,11 +135,15 @@
         <div class="image-row">
             <div class="image-col">
                 <span class="image-label">Input Image</span>
-                <img id="image-preview" src="" alt="Image preview"/>
+                <div class="image-visual-wrapper">
+                    <img id="image-preview" src="" alt="Image preview"/>
+                </div>
             </div>
             <div class="image-col">
                 <span class="image-label">Inference Result</span>
-                <div id="result"></div>
+                <div class="image-visual-wrapper">
+                    <div id="result"></div>
+                </div>
                 <div id="class-key" style="margin-top:18px; display:flex; flex-direction:row; gap:18px; justify-content:center; align-items:center;"></div>
             </div>
         </div>
@@ -385,8 +402,10 @@
             // Get maskCanvas and detected class indices
             const {maskCanvas, detectedClassIndices} = postprocessYOLOSeg(output0, output1, img, origW, origH, ratio, dw, dh);
             const resultDiv = document.getElementById('result');
+            const resultWrapper = resultDiv.parentElement;
             resultDiv.innerHTML = '';
             resultDiv.appendChild(maskCanvas);
+            resultWrapper.classList.add('has-result');
             renderClassKey(detectedClassIndices);
         }
 
@@ -398,6 +417,7 @@
                 document.getElementById('image-preview').src = img.src;
                 document.getElementById('image-preview').style.display = 'block';
                 document.getElementById('result').innerText = '';
+                document.getElementById('result').parentElement.classList.remove('has-result');
                 await runInference(img, img.naturalWidth, img.naturalHeight);
             };
             img.src = URL.createObjectURL(file);
