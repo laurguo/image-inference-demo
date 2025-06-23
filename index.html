@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ONNX Image Inference Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            background: #f7f7f7;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            width: 100vw;
+        }
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 32px;
+            text-align: center;
+        }
+        #image-input {
+            margin: 24px 0 16px 0;
+            font-size: 1.2rem;
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+            background: #fff;
+            cursor: pointer;
+            display: block;
+        }
+        #image-preview {
+            max-width: 480px;
+            max-height: 480px;
+            margin-top: 10px;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            display: none;
+        }
+        #result {
+            margin-top: 32px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        canvas {
+            max-width: 480px;
+            max-height: 480px;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+        }
+        .label-text {
+            font-size: 1.3rem;
+            font-weight: bold;
+            background: rgba(255,255,255,0.7);
+            padding: 2px 8px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+        @media (max-width: 600px) {
+            h1 { font-size: 1.5rem; }
+            #image-preview, canvas { max-width: 98vw; max-height: 60vw; }
+        }
+        .image-row {
+            display: flex;
+            flex-direction: row;
+            align-items: flex-start;
+            justify-content: center;
+            gap: 40px;
+            margin-top: 32px;
+        }
+        .image-col {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+        }
+        .image-label {
+            font-size: 1.1rem;
+            margin-bottom: 8px;
+            color: #333;
+        }
+        #image-preview, canvas {
+            max-width: 480px;
+            max-height: 480px;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            margin-bottom: 0;
+            vertical-align: top;
+        }
+        #result canvas {
+            display: block;
+        }
+        @media (max-width: 1100px) {
+            .image-row { flex-direction: column; gap: 16px; }
+        }
+        .centered-status {
+            text-align: center;
+            font-size: 1.2rem;
+            color: #2a2a2a;
+            margin-bottom: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ONNX Image Inference Demo</h1>
+        <div id="model-status" class="centered-status"></div>
+        <input type="file" id="image-input" accept="image/*">
+        <div class="image-row">
+            <div class="image-col">
+                <span class="image-label">Input Image</span>
+                <img id="image-preview" src="" alt="Image preview"/>
+            </div>
+            <div class="image-col">
+                <span class="image-label">Inference Result</span>
+                <div id="result"></div>
+                <div id="class-key" style="margin-top:18px; display:flex; flex-direction:row; gap:18px; justify-content:center; align-items:center;"></div>
+            </div>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+    <script>
+        const modelUrl = 'yolo11n-seg.onnx';
+        let session;
+        let inputShape = [1, 3, 640, 640];
+        const classNames = ['drawing', 'text', 'frame'];
+        const maskColors = [
+            [255, 0, 0],    // drawing: red
+            [0, 255, 0],    // text: green
+            [0, 128, 255]   // frame: blue
+        ];
+        const maskAlpha = 0.5; // Moderate alpha for blending
+
+        async function loadModel() {
+            session = await ort.InferenceSession.create(modelUrl, { executionProviders: ['wasm'] });
+            document.getElementById('model-status').innerText = 'Model loaded!';
+        }
+
+        function letterboxImage(img, newShape = [640, 640], color = [114, 114, 114]) {
+            // Returns: {canvas, ratio, dw, dh, newW, newH}
+            const shape = [img.naturalHeight, img.naturalWidth];
+            const r = Math.min(newShape[0] / shape[0], newShape[1] / shape[1]);
+            const newUnpad = [Math.round(shape[1] * r), Math.round(shape[0] * r)];
+            let dw = newShape[1] - newUnpad[0];
+            let dh = newShape[0] - newUnpad[1];
+            dw /= 2;
+            dh /= 2;
+            // Resize
+            const resizedCanvas = document.createElement('canvas');
+            resizedCanvas.width = newUnpad[0];
+            resizedCanvas.height = newUnpad[1];
+            const resizedCtx = resizedCanvas.getContext('2d');
+            resizedCtx.drawImage(img, 0, 0, newUnpad[0], newUnpad[1]);
+            // Letterbox
+            const canvas = document.createElement('canvas');
+            canvas.width = newShape[1];
+            canvas.height = newShape[0];
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
+            ctx.fillRect(0, 0, newShape[1], newShape[0]);
+            ctx.drawImage(resizedCanvas, Math.round(dw - 0.1), Math.round(dh - 0.1));
+            return {canvas, ratio: r, dw, dh, newW: newUnpad[0], newH: newUnpad[1]};
+        }
+
+        function preprocessImage(img) {
+            // Letterbox and normalize
+            const {canvas, ratio, dw, dh, newW, newH} = letterboxImage(img);
+            const ctx = canvas.getContext('2d');
+            const imageData = ctx.getImageData(0, 0, 640, 640);
+            const { data } = imageData;
+            const floatData = new Float32Array(3 * 640 * 640);
+            let idx = 0;
+            for (let c = 0; c < 3; c++) {
+                for (let y = 0; y < 640; y++) {
+                    for (let x = 0; x < 640; x++) {
+                        const i = (y * 640 + x) * 4;
+                        floatData[idx++] = data[i + c] / 255.0;
+                    }
+                }
+            }
+            return {floatData, ratio, dw, dh};
+        }
+
+        function sigmoid(x) {
+            return 1 / (1 + Math.exp(-x));
+        }
+
+        function softmax(arr) {
+            const max = Math.max(...arr);
+            const exps = arr.map(x => Math.exp(x - max));
+            const sum = exps.reduce((a, b) => a + b);
+            return exps.map(x => x / sum);
+        }
+
+        function boxIoU(boxA, boxB) {
+            const xA = Math.max(boxA[0], boxB[0]);
+            const yA = Math.max(boxA[1], boxB[1]);
+            const xB = Math.min(boxA[2], boxB[2]);
+            const yB = Math.min(boxA[3], boxB[3]);
+            const interArea = Math.max(0, xB - xA) * Math.max(0, yB - yA);
+            const boxAArea = Math.max(0, boxA[2] - boxA[0]) * Math.max(0, boxA[3] - boxA[1]);
+            const boxBArea = Math.max(0, boxB[2] - boxB[0]) * Math.max(0, boxB[3] - boxB[1]);
+            return interArea / (boxAArea + boxBArea - interArea + 1e-6);
+        }
+
+        function postprocessYOLOSeg(output0, output1, img, origW, origH, ratio, dw, dh) {
+            const numClasses = classNames.length;
+            const nChannels = 32;
+            const nBboxes = 8400;
+            const maskH = 160, maskW = 160;
+            const stride = 640 / maskW;
+            const confThreshold = 0.1;
+            const maskThreshold = 0.75;
+            const maxDetections = 100; // You can increase if your browser is fast
+            const boxesArr = output0.data;
+            const maskProtos = output1.data;
+            let maskProtosArr = [];
+            for (let c = 0; c < nChannels; c++) {
+                let channel = [];
+                for (let y = 0; y < maskH; y++) {
+                    for (let x = 0; x < maskW; x++) {
+                        channel.push(maskProtos[c * maskH * maskW + y * maskW + x]);
+                    }
+                }
+                maskProtosArr.push(channel);
+            }
+            // Parse detections
+            let detections = [];
+            for (let i = 0; i < nBboxes; i++) {
+                const classScores = [];
+                for (let c = 0; c < numClasses; c++) {
+                    classScores.push(boxesArr[(4 + c) * nBboxes + i]);
+                }
+                const classProbs = softmax(classScores);
+                const classId = classProbs.indexOf(Math.max(...classProbs));
+                const score = classProbs[classId];
+                if (score < confThreshold) continue;
+                const maskCoeffs = [];
+                for (let c = 0; c < nChannels; c++) {
+                    maskCoeffs.push(boxesArr[(4 + numClasses + c) * nBboxes + i]);
+                }
+                detections.push({classId, score, maskCoeffs});
+            }
+            // Sort by confidence and keep top N
+            detections.sort((a, b) => b.score - a.score);
+            const topDetections = detections.slice(0, maxDetections);
+            console.log('Top detection class IDs:', topDetections.map(d => d.classId));
+            console.log('Top detection scores:', topDetections.map(d => d.score));
+            // Prepare mask canvas
+            const maskCanvas = document.createElement('canvas');
+            maskCanvas.width = origW;
+            maskCanvas.height = origH;
+            const maskCtx = maskCanvas.getContext('2d');
+            maskCtx.drawImage(img, 0, 0, origW, origH);
+            // For each pixel, keep the highest mask value and its class among topDetections (true per-pixel max, like Python)
+            const pixelScores = new Float32Array(origW * origH).fill(0);
+            const pixelClasses = new Int8Array(origW * origH).fill(-1);
+            topDetections.forEach(det => {
+                // Compose mask
+                let mask = new Float32Array(maskH * maskW);
+                for (let i = 0; i < mask.length; i++) {
+                    let val = 0;
+                    for (let c = 0; c < nChannels; c++) {
+                        val += maskProtosArr[c][i] * det.maskCoeffs[c];
+                    }
+                    mask[i] = sigmoid(val);
+                }
+                // Resize mask to 640x640
+                const mask2d = new Float32Array(640 * 640);
+                for (let y = 0; y < 640; y++) {
+                    for (let x = 0; x < 640; x++) {
+                        const srcX = x / 4;
+                        const srcY = y / 4;
+                        const x0 = Math.floor(srcX), x1 = Math.min(Math.ceil(srcX), 159);
+                        const y0 = Math.floor(srcY), y1 = Math.min(Math.ceil(srcY), 159);
+                        const dx = srcX - x0, dy = srcY - y0;
+                        const v00 = mask[y0 * 160 + x0];
+                        const v01 = mask[y0 * 160 + x1];
+                        const v10 = mask[y1 * 160 + x0];
+                        const v11 = mask[y1 * 160 + x1];
+                        const v0 = v00 * (1 - dx) + v01 * dx;
+                        const v1 = v10 * (1 - dx) + v11 * dx;
+                        mask2d[y * 640 + x] = v0 * (1 - dy) + v1 * dy;
+                    }
+                }
+                // Remove letterbox padding and resize to original image size
+                const top = Math.round(dw - 0.1);
+                const left = Math.round(dw - 0.1);
+                const bottom = 640 - Math.round(dw + 0.1);
+                const right = 640 - Math.round(dw + 0.1);
+                const cropW = right - left;
+                const cropH = bottom - top;
+                for (let y = 0; y < origH; y++) {
+                    for (let x = 0; x < origW; x++) {
+                        const cx = x / origW * cropW;
+                        const cy = y / origH * cropH;
+                        const ix = Math.min(Math.floor(cx), cropW - 1);
+                        const iy = Math.min(Math.floor(cy), cropH - 1);
+                        const v = mask2d[(top + iy) * 640 + (left + ix)];
+                        const idx = y * origW + x;
+                        if (v > pixelScores[idx]) {
+                            pixelScores[idx] = v;
+                            pixelClasses[idx] = det.classId;
+                        }
+                    }
+                }
+            });
+            // Overlay the final mask (only where mask > threshold)
+            const maskImageData = maskCtx.getImageData(0, 0, origW, origH);
+            for (let i = 0; i < origW * origH; i++) {
+                const classIdx = pixelClasses[i];
+                if (classIdx >= 0 && pixelScores[i] > maskThreshold) {
+                    maskImageData.data[i * 4 + 0] = maskColors[classIdx][0] * maskAlpha + maskImageData.data[i * 4 + 0] * (1 - maskAlpha);
+                    maskImageData.data[i * 4 + 1] = maskColors[classIdx][1] * maskAlpha + maskImageData.data[i * 4 + 1] * (1 - maskAlpha);
+                    maskImageData.data[i * 4 + 2] = maskColors[classIdx][2] * maskAlpha + maskImageData.data[i * 4 + 2] * (1 - maskAlpha);
+                }
+            }
+            maskCtx.putImageData(maskImageData, 0, 0);
+            return maskCanvas;
+        }
+
+        async function runInference(img, origW, origH) {
+            document.getElementById('model-status').innerText = '';
+            document.getElementById('result').innerText = 'Running inference...';
+            const {floatData, ratio, dw, dh} = preprocessImage(img);
+            const tensor = new ort.Tensor('float32', floatData, inputShape);
+            const feeds = {};
+            feeds[session.inputNames[0]] = tensor;
+            const outputMap = await session.run(feeds);
+            const output0 = outputMap[session.outputNames[0]];
+            const output1 = outputMap[session.outputNames[1]];
+            const maskCanvas = postprocessYOLOSeg(output0, output1, img, origW, origH, ratio, dw, dh);
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '';
+            resultDiv.appendChild(maskCanvas);
+            renderClassKey();
+        }
+
+        document.getElementById('image-input').addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            const img = new window.Image();
+            img.onload = async () => {
+                document.getElementById('image-preview').src = img.src;
+                document.getElementById('image-preview').style.display = 'block';
+                document.getElementById('result').innerText = '';
+                await runInference(img, img.naturalWidth, img.naturalHeight);
+            };
+            img.src = URL.createObjectURL(file);
+        });
+
+        loadModel();
+
+        // After showing the result, render the class key
+        function renderClassKey() {
+            const keyDiv = document.getElementById('class-key');
+            keyDiv.innerHTML = '';
+            for (let i = 0; i < classNames.length; i++) {
+                const swatch = document.createElement('span');
+                swatch.style.display = 'inline-block';
+                swatch.style.width = '22px';
+                swatch.style.height = '22px';
+                swatch.style.background = `rgb(${maskColors[i][0]},${maskColors[i][1]},${maskColors[i][2]})`;
+                swatch.style.border = '2px solid #222';
+                swatch.style.marginRight = '7px';
+                swatch.style.verticalAlign = 'middle';
+                const label = document.createElement('span');
+                label.style.fontSize = '1.1rem';
+                label.style.verticalAlign = 'middle';
+                label.innerText = classNames[i];
+                const item = document.createElement('span');
+                item.style.display = 'inline-flex';
+                item.style.alignItems = 'center';
+                item.appendChild(swatch);
+                item.appendChild(label);
+                keyDiv.appendChild(item);
+            }
+        }
+    </script>
+</body>
+</html> 
