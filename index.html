@@ -48,7 +48,6 @@
             display: none;
         }
         #result {
-            margin-top: 32px;
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -86,6 +85,20 @@
             align-items: center;
             justify-content: flex-start;
         }
+        .image-visual-wrapper {
+            align-self: flex-start;
+            display: flex;
+            flex-direction: column;
+        }
+        .image-visual-wrapper.has-result {
+            margin-top: 10px;
+        }
+        .image-col > img,
+        .image-col > canvas {
+            display: block;
+            margin-bottom: 0;
+            vertical-align: top;
+        }
         .image-label {
             font-size: 1.1rem;
             margin-bottom: 8px;
@@ -122,11 +135,15 @@
         <div class="image-row">
             <div class="image-col">
                 <span class="image-label">Input Image</span>
-                <img id="image-preview" src="" alt="Image preview"/>
+                <div class="image-visual-wrapper">
+                    <img id="image-preview" src="" alt="Image preview"/>
+                </div>
             </div>
             <div class="image-col">
                 <span class="image-label">Inference Result</span>
-                <div id="result"></div>
+                <div class="image-visual-wrapper">
+                    <div id="result"></div>
+                </div>
                 <div id="class-key" style="margin-top:18px; display:flex; flex-direction:row; gap:18px; justify-content:center; align-items:center;"></div>
             </div>
         </div>
@@ -253,7 +270,7 @@
             const maskH = 160, maskW = 160;
             const stride = 640 / maskW;
             const confThreshold = 0.02;
-            const maskThreshold = 0.5;
+            const maskThreshold = 0.7;
             const maxDetections = 100; // You can increase if your browser is fast
             const boxesArr = output0.data;
             const maskProtos = output1.data;
@@ -325,10 +342,10 @@
                     }
                 }
                 // Remove letterbox padding and resize to original image size
-                const top = Math.round(dw - 0.1);
                 const left = Math.round(dw - 0.1);
-                const bottom = 640 - Math.round(dw + 0.1);
                 const right = 640 - Math.round(dw + 0.1);
+                const top = Math.round(dh - 0.1);
+                const bottom = 640 - Math.round(dh + 0.1);
                 const cropW = right - left;
                 const cropH = bottom - top;
                 for (let y = 0; y < origH; y++) {
@@ -346,26 +363,44 @@
                     }
                 }
             });
-            // Overlay the final mask (only where mask > threshold)
-            const maskImageData = maskCtx.getImageData(0, 0, origW, origH);
             // Track detected class indices and their mask area
             const classAreaMap = new Map(); // classIdx -> pixel count
             for (let i = 0; i < origW * origH; i++) {
                 const classIdx = pixelClasses[i];
                 if (classIdx >= 0 && pixelScores[i] > maskThreshold) {
                     classAreaMap.set(classIdx, (classAreaMap.get(classIdx) || 0) + 1);
-                    maskImageData.data[i * 4 + 0] = maskColors[classIdx][0] * maskAlpha + maskImageData.data[i * 4 + 0] * (1 - maskAlpha);
-                    maskImageData.data[i * 4 + 1] = maskColors[classIdx][1] * maskAlpha + maskImageData.data[i * 4 + 1] * (1 - maskAlpha);
-                    maskImageData.data[i * 4 + 2] = maskColors[classIdx][2] * maskAlpha + maskImageData.data[i * 4 + 2] * (1 - maskAlpha);
                 }
             }
-            maskCtx.putImageData(maskImageData, 0, 0);
+            // Remove classes with mask area less than 1% of the image
+            const minArea = 0.03 * origW * origH;
+            for (const [classIdx, area] of classAreaMap.entries()) {
+                if (area < minArea) {
+                    classAreaMap.delete(classIdx);
+                }
+            }
             // Get top 5 classes by area
             const detectedClassIndices = Array.from(classAreaMap.entries())
                 .sort((a, b) => b[1] - a[1])
                 .slice(0, 5)
                 .map(([classIdx, _]) => classIdx);
-            return {maskCanvas, detectedClassIndices};
+            // Assign a color for each detected class (HSV evenly spaced)
+            const classColorMap = {};
+            detectedClassIndices.forEach((classIdx, i) => {
+                classColorMap[classIdx] = hsvToRgb(i / detectedClassIndices.length, 0.7, 1.0);
+            });
+            // Overlay the final mask (only where mask > threshold)
+            const maskImageData = maskCtx.getImageData(0, 0, origW, origH);
+            for (let i = 0; i < origW * origH; i++) {
+                const classIdx = pixelClasses[i];
+                if (classIdx >= 0 && pixelScores[i] > maskThreshold && classColorMap[classIdx]) {
+                    const color = classColorMap[classIdx];
+                    maskImageData.data[i * 4 + 0] = color[0] * maskAlpha + maskImageData.data[i * 4 + 0] * (1 - maskAlpha);
+                    maskImageData.data[i * 4 + 1] = color[1] * maskAlpha + maskImageData.data[i * 4 + 1] * (1 - maskAlpha);
+                    maskImageData.data[i * 4 + 2] = color[2] * maskAlpha + maskImageData.data[i * 4 + 2] * (1 - maskAlpha);
+                }
+            }
+            maskCtx.putImageData(maskImageData, 0, 0);
+            return {maskCanvas, detectedClassIndices, classColorMap};
         }
 
         async function runInference(img, origW, origH) {
@@ -383,11 +418,13 @@
             const output0 = outputMap[session.outputNames[0]];
             const output1 = outputMap[session.outputNames[1]];
             // Get maskCanvas and detected class indices
-            const {maskCanvas, detectedClassIndices} = postprocessYOLOSeg(output0, output1, img, origW, origH, ratio, dw, dh);
+            const {maskCanvas, detectedClassIndices, classColorMap} = postprocessYOLOSeg(output0, output1, img, origW, origH, ratio, dw, dh);
             const resultDiv = document.getElementById('result');
+            const resultWrapper = resultDiv.parentElement;
             resultDiv.innerHTML = '';
             resultDiv.appendChild(maskCanvas);
-            renderClassKey(detectedClassIndices);
+            resultWrapper.classList.add('has-result');
+            renderClassKey(detectedClassIndices, classColorMap);
         }
 
         document.getElementById('image-input').addEventListener('change', async (event) => {
@@ -398,6 +435,7 @@
                 document.getElementById('image-preview').src = img.src;
                 document.getElementById('image-preview').style.display = 'block';
                 document.getElementById('result').innerText = '';
+                document.getElementById('result').parentElement.classList.remove('has-result');
                 await runInference(img, img.naturalWidth, img.naturalHeight);
             };
             img.src = URL.createObjectURL(file);
@@ -406,7 +444,7 @@
         loadModel();
 
         // After showing the result, render the class key
-        function renderClassKey(detectedClassIndices) {
+        function renderClassKey(detectedClassIndices, classColorMap) {
             const keyDiv = document.getElementById('class-key');
             keyDiv.innerHTML = '';
             if (!detectedClassIndices || detectedClassIndices.length === 0) {
@@ -418,7 +456,8 @@
                 swatch.style.display = 'inline-block';
                 swatch.style.width = '22px';
                 swatch.style.height = '22px';
-                swatch.style.background = `rgb(${maskColors[i][0]},${maskColors[i][1]},${maskColors[i][2]})`;
+                const color = classColorMap && classColorMap[i] ? classColorMap[i] : [200,200,200];
+                swatch.style.background = `rgb(${color[0]},${color[1]},${color[2]})`;
                 swatch.style.border = '2px solid #222';
                 swatch.style.marginRight = '7px';
                 swatch.style.verticalAlign = 'middle';
