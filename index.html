@@ -116,8 +116,9 @@
 <body>
     <div class="container">
         <h1>ONNX Image Inference Demo</h1>
+        <h2 style="font-size:1.1rem; font-weight:normal; color:#444; margin-top:-18px; margin-bottom:18px; text-align:center; max-width:600px;">Model is trained on <a href='https://cocodataset.org/#home' target='_blank' style='color:#1976d2;text-decoration:underline;'>COCO</a> images (80 common object classes). For best results, try photos with people, cars, animals, household items, etc.</h2>
         <div id="model-status" class="centered-status"></div>
-        <input type="file" id="image-input" accept="image/*">
+        <input type="file" id="image-input" accept="image/*" disabled>
         <div class="image-row">
             <div class="image-col">
                 <span class="image-label">Input Image</span>
@@ -135,17 +136,47 @@
         const modelUrl = 'yolo11n-seg.onnx';
         let session;
         let inputShape = [1, 3, 640, 640];
-        const classNames = ['drawing', 'text', 'frame'];
-        const maskColors = [
-            [255, 0, 0],    // drawing: red
-            [0, 255, 0],    // text: green
-            [0, 128, 255]   // frame: blue
+        // COCO 80 class names
+        const classNames = [
+            'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+            'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+            'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+            'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket', 'bottle',
+            'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
+            'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed',
+            'dining table', 'toilet', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 'oven',
+            'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
         ];
+        // Generate 80 visually distinct colors for masks
+        const maskColors = Array.from({length: 80}, (_, i) => {
+            const hue = Math.floor((i * 360) / 80);
+            const rgb = hsvToRgb(hue / 360, 0.7, 1.0);
+            return rgb;
+        });
+        // HSV to RGB helper
+        function hsvToRgb(h, s, v) {
+            let r, g, b;
+            let i = Math.floor(h * 6);
+            let f = h * 6 - i;
+            let p = v * (1 - s);
+            let q = v * (1 - f * s);
+            let t = v * (1 - (1 - f) * s);
+            switch (i % 6) {
+                case 0: r = v, g = t, b = p; break;
+                case 1: r = q, g = v, b = p; break;
+                case 2: r = p, g = v, b = t; break;
+                case 3: r = p, g = q, b = v; break;
+                case 4: r = t, g = p, b = v; break;
+                case 5: r = v, g = p, b = q; break;
+            }
+            return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+        }
         const maskAlpha = 0.5; // Moderate alpha for blending
 
         async function loadModel() {
             session = await ort.InferenceSession.create(modelUrl, { executionProviders: ['wasm'] });
             document.getElementById('model-status').innerText = 'Model loaded!';
+            document.getElementById('image-input').disabled = false;
         }
 
         function letterboxImage(img, newShape = [640, 640], color = [114, 114, 114]) {
@@ -221,8 +252,8 @@
             const nBboxes = 8400;
             const maskH = 160, maskW = 160;
             const stride = 640 / maskW;
-            const confThreshold = 0.1;
-            const maskThreshold = 0.75;
+            const confThreshold = 0.02;
+            const maskThreshold = 0.5;
             const maxDetections = 100; // You can increase if your browser is fast
             const boxesArr = output0.data;
             const maskProtos = output1.data;
@@ -256,8 +287,6 @@
             // Sort by confidence and keep top N
             detections.sort((a, b) => b.score - a.score);
             const topDetections = detections.slice(0, maxDetections);
-            console.log('Top detection class IDs:', topDetections.map(d => d.classId));
-            console.log('Top detection scores:', topDetections.map(d => d.score));
             // Prepare mask canvas
             const maskCanvas = document.createElement('canvas');
             maskCanvas.width = origW;
@@ -319,19 +348,31 @@
             });
             // Overlay the final mask (only where mask > threshold)
             const maskImageData = maskCtx.getImageData(0, 0, origW, origH);
+            // Track detected class indices and their mask area
+            const classAreaMap = new Map(); // classIdx -> pixel count
             for (let i = 0; i < origW * origH; i++) {
                 const classIdx = pixelClasses[i];
                 if (classIdx >= 0 && pixelScores[i] > maskThreshold) {
+                    classAreaMap.set(classIdx, (classAreaMap.get(classIdx) || 0) + 1);
                     maskImageData.data[i * 4 + 0] = maskColors[classIdx][0] * maskAlpha + maskImageData.data[i * 4 + 0] * (1 - maskAlpha);
                     maskImageData.data[i * 4 + 1] = maskColors[classIdx][1] * maskAlpha + maskImageData.data[i * 4 + 1] * (1 - maskAlpha);
                     maskImageData.data[i * 4 + 2] = maskColors[classIdx][2] * maskAlpha + maskImageData.data[i * 4 + 2] * (1 - maskAlpha);
                 }
             }
             maskCtx.putImageData(maskImageData, 0, 0);
-            return maskCanvas;
+            // Get top 5 classes by area
+            const detectedClassIndices = Array.from(classAreaMap.entries())
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 5)
+                .map(([classIdx, _]) => classIdx);
+            return {maskCanvas, detectedClassIndices};
         }
 
         async function runInference(img, origW, origH) {
+            if (!session) {
+                document.getElementById('model-status').innerText = 'Model not loaded yet!';
+                return;
+            }
             document.getElementById('model-status').innerText = '';
             document.getElementById('result').innerText = 'Running inference...';
             const {floatData, ratio, dw, dh} = preprocessImage(img);
@@ -341,11 +382,12 @@
             const outputMap = await session.run(feeds);
             const output0 = outputMap[session.outputNames[0]];
             const output1 = outputMap[session.outputNames[1]];
-            const maskCanvas = postprocessYOLOSeg(output0, output1, img, origW, origH, ratio, dw, dh);
+            // Get maskCanvas and detected class indices
+            const {maskCanvas, detectedClassIndices} = postprocessYOLOSeg(output0, output1, img, origW, origH, ratio, dw, dh);
             const resultDiv = document.getElementById('result');
             resultDiv.innerHTML = '';
             resultDiv.appendChild(maskCanvas);
-            renderClassKey();
+            renderClassKey(detectedClassIndices);
         }
 
         document.getElementById('image-input').addEventListener('change', async (event) => {
@@ -364,10 +406,14 @@
         loadModel();
 
         // After showing the result, render the class key
-        function renderClassKey() {
+        function renderClassKey(detectedClassIndices) {
             const keyDiv = document.getElementById('class-key');
             keyDiv.innerHTML = '';
-            for (let i = 0; i < classNames.length; i++) {
+            if (!detectedClassIndices || detectedClassIndices.length === 0) {
+                keyDiv.innerText = 'No objects detected.';
+                return;
+            }
+            for (const i of detectedClassIndices) {
                 const swatch = document.createElement('span');
                 swatch.style.display = 'inline-block';
                 swatch.style.width = '22px';
