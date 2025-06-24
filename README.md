@@ -7,3 +7,5 @@ Tech Stack:
 - Inference: ONNX Runtime
 - Frontend: plain HTML/CSS/JS
 - Hosting: GitHub Pages (for frontend demo)
+
+Demo: laurguo.github.io/image-inference-demo/
